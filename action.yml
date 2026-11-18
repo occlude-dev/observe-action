@@ -1,0 +1,125 @@
+# Generated for occlude-dev/observe-action v0.0.0-rc.1. Do not edit: the next release replaces this file.
+name: Occlude Observation recorder
+description: Pre-release, not for use.
+inputs:
+  run-id:
+    description: The Observation run id Occlude shows when the run is started.
+    required: true
+  cloud-url:
+    description: The Occlude address the payload is posted to.
+    required: true
+  repo:
+    description: owner/name of the repository observed.
+    default: ${{ github.repository }}
+  commit:
+    description: The commit the checkout is at.
+    default: ${{ github.sha }}
+  checkout:
+    description: Path of the checkout to observe.
+    default: .
+  recorder:
+    description: Empty for the static pass only; fanotify (needs SYS_ADMIN) or ptrace (strace on PATH) to record the passes.
+    default: ""
+  passes:
+    description: Comma-separated scripts to record, each run as `npm run <pass>`; build, test and dev only.
+    default: "build,test,dev"
+outputs:
+  payload:
+    description: Path of the payload that was checked and posted.
+    value: ${{ steps.scan.outputs.payload }}
+runs:
+  using: composite
+  steps:
+
+    - name: Fetch and verify the recorder
+      id: fetch
+      shell: bash
+      run: |
+        set -euo pipefail
+        base="https://github.com/occlude-dev/observe-action/releases/download/v0.0.0-rc.1"
+        case "${RUNNER_OS:-}/${RUNNER_ARCH:-}" in
+          Linux/X64) arch=amd64 ;;
+          Linux/ARM64) arch=arm64 ;;
+          *) echo "Occlude recorder: runs on Linux x64 and arm64 runners only; this runner is ${RUNNER_OS:-unknown} ${RUNNER_ARCH:-unknown}" >&2; exit 2 ;;
+        esac
+        dir="$RUNNER_TEMP/occlude-recorder"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        for tool in observe leakcheck; do
+          asset="$tool-linux-$arch"
+          case "$asset" in
+            observe-linux-amd64) want=61c0b5b5aef7b8563c9c7d7e9165000d13734b25e9d54210684f86044ce926df ;;
+            observe-linux-arm64) want=c680b1383775bb0e1acd93188385e9375336965ab264e3306c63e319acb78dab ;;
+            leakcheck-linux-amd64) want=a2de88799e89bf132df3816cef9a36123afae0696936b0125fc4d0ebf084de71 ;;
+            leakcheck-linux-arm64) want=89472a8946ca77ca6044f3fe9d7c802ee50fd4cf809cbed69e155f4b5db04a8b ;;
+          esac
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$dir/$asset" "$base/$asset"
+          got=$(sha256sum "$dir/$asset" | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            rm -f "$dir/$asset"
+            echo "Occlude recorder: $asset does not match the SHA-256 this action pins (want $want, got $got); nothing was run" >&2
+            exit 1
+          fi
+          chmod 0755 "$dir/$asset"
+          echo "$tool=$dir/$asset" >> "$GITHUB_OUTPUT"
+        done
+
+    - name: Scan the checkout
+      id: scan
+      shell: bash
+      env:
+        RUN_ID: ${{ inputs.run-id }}
+        REPO: ${{ inputs.repo }}
+        COMMIT: ${{ inputs.commit }}
+        CHECKOUT: ${{ inputs.checkout }}
+        OBSERVE_BIN: ${{ steps.fetch.outputs.observe }}
+        RECORDER: ${{ inputs.recorder }}
+        PASSES: ${{ inputs.passes }}
+      run: |
+        set -euo pipefail
+        tmp="${RUNNER_TEMP:-/tmp}"
+        out="$tmp/occlude-observe-payload.json"
+        tree=$(cd "$CHECKOUT" && pwd)
+        observe() { "$OBSERVE_BIN" "$@"; }
+        records=""
+        if [ -n "$RECORDER" ]; then
+          run_passes=$(observe preflight -tree "$tree" -passes "$PASSES")
+          if [ "$RECORDER" = fanotify ] && [ "$(id -u)" != 0 ]; then
+            if ! sudo -n setcap cap_sys_admin+ep "$OBSERVE_BIN"; then
+              echo "Occlude recorder: recorder fanotify needs CAP_SYS_ADMIN, granted with sudo setcap on the recorder binary, which failed; use recorder ptrace with strace installed" >&2
+              exit 1
+            fi
+          fi
+          IFS=, read -ra list <<< "$run_passes"
+          for pass in "${list[@]}"; do
+            rec="$tmp/occlude-observe-pass-$pass.json"
+            observe record -pass "$pass" -recorder "$RECORDER" -tree "$tree" -out "$rec" -- npm run "$pass"
+            records="${records:+$records,}$rec"
+          done
+          observe scan -tree "$tree" -run "$RUN_ID" -repo "$REPO" -commit "$COMMIT" -out "$out" -passes "$records"
+          IFS=, read -ra done_ <<< "$records"; rm -f "${done_[@]}"
+        else
+          observe scan -tree "$tree" -run "$RUN_ID" -repo "$REPO" -commit "$COMMIT" -out "$out"
+        fi
+        echo "payload=$out" >> "$GITHUB_OUTPUT"
+
+    - name: Leak-check the payload against every file of the checkout
+      shell: bash
+      env:
+        CHECKOUT: ${{ inputs.checkout }}
+        PAYLOAD: ${{ steps.scan.outputs.payload }}
+        LEAKCHECK_BIN: ${{ steps.fetch.outputs.leakcheck }}
+      run: |
+        set -euo pipefail
+        tree=$(cd "$CHECKOUT" && pwd)
+        "$LEAKCHECK_BIN" -all-hidden -tree "$tree" "$PAYLOAD"
+
+    - name: Post the payload
+      shell: bash
+      env:
+        PAYLOAD: ${{ steps.scan.outputs.payload }}
+        CLOUD_URL: ${{ inputs.cloud-url }}
+        OBSERVE_BIN: ${{ steps.fetch.outputs.observe }}
+      run: |
+        set -euo pipefail
+        "$OBSERVE_BIN" post -in "$PAYLOAD" -url "$CLOUD_URL"
