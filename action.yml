@@ -1,4 +1,4 @@
-# Generated for occlude-dev/observe-action v0.0.0-rc.1. Do not edit: the next release replaces this file.
+# Generated for occlude-dev/observe-action v0.0.0-rc.2. Do not edit: the next release replaces this file.
 name: Occlude Observation recorder
 description: Pre-release, not for use.
 inputs:
@@ -17,6 +17,9 @@ inputs:
   checkout:
     description: Path of the checkout to observe.
     default: .
+  run-token:
+    description: The run token, from a secret; given to the post step alone.
+    required: true
   recorder:
     description: Empty for the static pass only; fanotify (needs SYS_ADMIN) or ptrace (strace on PATH) to record the passes.
     default: ""
@@ -36,7 +39,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        base="https://github.com/occlude-dev/observe-action/releases/download/v0.0.0-rc.1"
+        base="https://github.com/occlude-dev/observe-action/releases/download/v0.0.0-rc.2"
         case "${RUNNER_OS:-}/${RUNNER_ARCH:-}" in
           Linux/X64) arch=amd64 ;;
           Linux/ARM64) arch=arm64 ;;
@@ -48,10 +51,10 @@ runs:
         for tool in observe leakcheck; do
           asset="$tool-linux-$arch"
           case "$asset" in
-            observe-linux-amd64) want=61c0b5b5aef7b8563c9c7d7e9165000d13734b25e9d54210684f86044ce926df ;;
-            observe-linux-arm64) want=c680b1383775bb0e1acd93188385e9375336965ab264e3306c63e319acb78dab ;;
-            leakcheck-linux-amd64) want=a2de88799e89bf132df3816cef9a36123afae0696936b0125fc4d0ebf084de71 ;;
-            leakcheck-linux-arm64) want=89472a8946ca77ca6044f3fe9d7c802ee50fd4cf809cbed69e155f4b5db04a8b ;;
+            observe-linux-amd64) want=50bf4d33b4e41c0583cbcc7a1e738ac5e9b0d3f9b2f826b3063d14759d213ca1 ;;
+            observe-linux-arm64) want=f5923637440fb8ff74aaffe5d41ab954d4b0f1e141487a3b864d7288bc6faae6 ;;
+            leakcheck-linux-amd64) want=6bb77cb313454b03dfdeea8fce2a432b6d7650b72aa85abd4836ff728f4a798d ;;
+            leakcheck-linux-arm64) want=4e272dca7f0640c62aa9fe2926d90b5864c80e0d661d4f1aca30d6b8a66ab57c ;;
           esac
           curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$dir/$asset" "$base/$asset"
           got=$(sha256sum "$dir/$asset" | cut -d' ' -f1)
@@ -77,6 +80,10 @@ runs:
         PASSES: ${{ inputs.passes }}
       run: |
         set -euo pipefail
+        if [ -n "${OCCLUDE_RUN_TOKEN+set}" ]; then
+          echo "Occlude recorder: OCCLUDE_RUN_TOKEN is in this step's environment, where the repository's scripts could read it; pass it as the run-token input instead, and remove it from env" >&2
+          exit 2
+        fi
         tmp="${RUNNER_TEMP:-/tmp}"
         out="$tmp/occlude-observe-payload.json"
         tree=$(cd "$CHECKOUT" && pwd)
@@ -119,6 +126,7 @@ runs:
       env:
         PAYLOAD: ${{ steps.scan.outputs.payload }}
         CLOUD_URL: ${{ inputs.cloud-url }}
+        OCCLUDE_RUN_TOKEN: ${{ inputs.run-token }}
         OBSERVE_BIN: ${{ steps.fetch.outputs.observe }}
       run: |
         set -euo pipefail

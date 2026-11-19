@@ -23,11 +23,10 @@ jobs:
       - uses: actions/checkout@<commit>   # pin by commit
       - run: npm ci
       - run: sudo apt-get install -y strace
-      - uses: occlude-dev/observe-action@@COMMIT@   # v0.0.0-rc.1
-        env:
-          OCCLUDE_RUN_TOKEN: ${{ secrets.OCCLUDE_RUN_TOKEN }}
+      - uses: occlude-dev/observe-action@@COMMIT@   # v0.0.0-rc.2
         with:
           run-id: ${{ inputs.run-id }}
           cloud-url: <address>
+          run-token: ${{ secrets.OCCLUDE_RUN_TOKEN }}
           recorder: ptrace
 ```
